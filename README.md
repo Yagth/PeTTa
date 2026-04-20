@@ -15,6 +15,10 @@ Example run:
 
 `time sh run.sh ./examples/nars_tuffy.metta`
 
+Profile a MeTTa program and print a MeTTa-only SWI-Prolog profile report:
+
+`sh run.sh -p -s ./examples/profile_nested_imports.metta`
+
 ### MORK and FAISS spaces
 
 If MORK and FAISS is installed, execute `sh build.sh` to support MORK-based atom spaces and FAISS-based atom-vector spaces.
