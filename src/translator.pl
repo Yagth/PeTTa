@@ -158,6 +158,10 @@ translate_expr([H0|T0], Goals, Out) :-
                                               build_branch(ConE, Ev, Out, BE),
                                               ( ConC == true -> append(GsH, [ (Cv == true -> BT ; BE) ], Goals)
                                                               ; append(GsH, [ (ConC, (Cv == true -> BT ; BE)) ], Goals) )
+        ; HV == until, T = [PredExpr, FuncExpr, XExpr] -> translate_expr(PredExpr, GsPred, PredV),
+                                                         translate_expr(FuncExpr, GsFunc, FuncV),
+                                                         translate_expr(XExpr, GsX, XV),
+                                                         append([GsH, GsPred, GsFunc, GsX, [until_runtime(PredV, FuncV, XV, Out)]], Goals)
         ; HV == case, T = [KeyExpr, PairsExpr] -> ( select(Found0, PairsExpr, Rest0),
                                                     subsumes_term(['Empty', _], Found0),
                                                     Found0 = ['Empty', DefaultExpr],

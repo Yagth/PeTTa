@@ -242,6 +242,14 @@ call_goals([]).
 call_goals([G|Gs]) :- call(G), 
                       call_goals(Gs).
 
+until_runtime(Pred, Func, X, Out) :-
+    reduce([Pred, X], Truth),
+    ( Truth == true
+      -> Out = X
+      ; reduce([Func, X], Next),
+        until_runtime(Pred, Func, Next, Out)
+    ).
+
 %%% Profiling: %%%
 :- dynamic metta_profile_session/0.
 :- multifile prolog:show_profile_hook/1.
@@ -339,13 +347,14 @@ show_metta_call_tree(Nodes, MettaPreds, Summary) :-
     ( Roots == []
       -> true
       ; format("~`-t~112|~n"),
-        format("Recursive MeTTa call tree from hot entry functions (all reachable MeTTa callees)~n"),
-        format("Repeated caller->callee edges are aggregated by predicate name.~n"),
-        format("Function~tCalls~78|~tTotal~92|~tTotal %~106|~n"),
+        format("Partitioned MeTTa call tree from hot entry functions~n"),
+        format("Displayed totals are caller-attributed so each node equals its self time plus displayed children.~n"),
+        format("Repeated caller->callee edges are aggregated by predicate name before partitioning.~n"),
+        format("Function~tCalls~78|~tTime~92|~tTime %~106|~n"),
         format("~`-t~112|~n"),
         forall(member(Root, Roots),
                ( show_metta_call_tree_root(Root, Nodes, MettaPreds, Summary),
-                 format("~`-t~112|~n")
+                  format("~`-t~112|~n")
                ))
     ).
 
@@ -374,14 +383,14 @@ has_metta_caller(Node, MettaPreds) :-
     is_metta_profile_node(MettaPreds, RelativeNode).
 
 show_metta_call_tree_root(Node, Nodes, MettaPreds, Summary) :-
-    show_metta_profile_tree_node(Node, Node.call, Summary, 0, [], [], _, Nodes, MettaPreds).
+    node_total_ticks(Node, RootTicks),
+    show_metta_profile_tree_node(Node, Node.call, RootTicks, Summary, 0, [], [], _, Nodes, MettaPreds).
 
-show_metta_profile_tree_node(Node, Calls, Summary, Depth, Seen, ExpandedIn, ExpandedOut, Nodes, MettaPreds) :-
+show_metta_profile_tree_node(Node, Calls, AllocatedTicks, Summary, Depth, Seen, ExpandedIn, ExpandedOut, Nodes, MettaPreds) :-
     normalize_profile_predicate(Node.predicate, Pred),
     predicate_label(Pred, Label),
-    TotalTicks is Node.ticks_self + Node.ticks_siblings,
-    ticks_to_seconds(TotalTicks, Summary, TotalSeconds),
-    ticks_to_percentage(TotalTicks, Summary, TotalPercent),
+    ticks_to_seconds(AllocatedTicks, Summary, TotalSeconds),
+    ticks_to_percentage(AllocatedTicks, Summary, TotalPercent),
     ( memberchk(Pred, Seen)
       -> format_metta_tree_line(Depth, Label, Calls, TotalSeconds, TotalPercent, cycle),
          ExpandedOut = ExpandedIn
@@ -389,11 +398,24 @@ show_metta_profile_tree_node(Node, Calls, Summary, Depth, Seen, ExpandedIn, Expa
       -> format_metta_tree_line(Depth, Label, Calls, TotalSeconds, TotalPercent, shared),
          ExpandedOut = ExpandedIn
       ; format_metta_tree_line(Depth, Label, Calls, TotalSeconds, TotalPercent, normal),
-         metta_profile_callees(Node, MettaPreds, Callees),
+         partition_metta_node(Node, AllocatedTicks, MettaPreds, SelfTicks, Callees),
          Seen1 = [Pred|Seen],
          Expanded1 = [Pred|ExpandedIn],
          Depth1 is Depth + 1,
-         show_metta_profile_tree_callees(Callees, Summary, Depth1, Seen1, Expanded1, ExpandedOut, Nodes, MettaPreds)
+         show_metta_profile_tree_components(SelfTicks, Callees, Summary, Depth1, Seen1, Expanded1, ExpandedOut, Nodes, MettaPreds)
+    ).
+
+show_metta_profile_tree_components(SelfTicks, Callees, Summary, Depth, Seen, ExpandedIn, ExpandedOut, Nodes, MettaPreds) :-
+    show_metta_profile_self(SelfTicks, Summary, Depth, ExpandedIn, ExpandedMid),
+    show_metta_profile_tree_callees(Callees, Summary, Depth, Seen, ExpandedMid, ExpandedOut, Nodes, MettaPreds).
+
+show_metta_profile_self(SelfTicks, Summary, Depth, ExpandedIn, ExpandedOut) :-
+    ( SelfTicks =< 0
+      -> ExpandedOut = ExpandedIn
+      ; ticks_to_seconds(SelfTicks, Summary, SelfSeconds),
+        ticks_to_percentage(SelfTicks, Summary, SelfPercent),
+        format_metta_tree_line(Depth, '[self]', 0, SelfSeconds, SelfPercent, self),
+        ExpandedOut = ExpandedIn
     ).
 
 show_metta_profile_tree_callees([], _, _, _, Expanded, Expanded, _, _).
@@ -414,16 +436,40 @@ show_metta_profile_tree_callee(Pred, Calls, Ticks, Summary, Depth, Seen, Expande
       ; format_metta_tree_line(Depth, Label, Calls, TotalSeconds, TotalPercent, normal),
         Expanded1 = [Pred|ExpandedIn],
         ( metta_node_for_predicate(Nodes, Pred, Node)
-          -> metta_profile_callees(Node, MettaPreds, ChildCallees),
-             ( ChildCallees == []
+          -> partition_metta_node(Node, Ticks, MettaPreds, SelfTicks, ChildCallees),
+             ( SelfTicks =< 0,
+               ChildCallees == []
                -> ExpandedOut = Expanded1
                ; Seen1 = [Pred|Seen],
                  Depth1 is Depth + 1,
-                 show_metta_profile_tree_callees(ChildCallees, Summary, Depth1, Seen1, Expanded1, ExpandedOut, Nodes, MettaPreds)
+                 show_metta_profile_tree_components(SelfTicks, ChildCallees, Summary, Depth1, Seen1, Expanded1, ExpandedOut, Nodes, MettaPreds)
              )
           ; ExpandedOut = Expanded1
         )
     ).
+
+partition_metta_node(Node, AllocatedTicks, MettaPreds, SelfTicks, PartitionedCallees) :-
+    metta_profile_callees(Node, MettaPreds, RawCallees),
+    RawSelfTicks is max(0, Node.ticks_self),
+    raw_callee_ticks(RawCallees, RawChildTicks),
+    ComponentTicks is RawSelfTicks + RawChildTicks,
+    ( ComponentTicks =< 0
+      -> SelfTicks = AllocatedTicks,
+         PartitionedCallees = []
+      ; Scale is AllocatedTicks / ComponentTicks,
+        SelfTicks is AllocatedTicks * RawSelfTicks / ComponentTicks,
+        partition_metta_callees(RawCallees, Scale, PartitionedCallees)
+    ).
+
+partition_metta_callees([], _, []).
+partition_metta_callees([callee(Pred, Calls, RawTicks)|Callees], Scale, [callee(Pred, Calls, Ticks)|Partitioned]) :-
+    Ticks is RawTicks * Scale,
+    partition_metta_callees(Callees, Scale, Partitioned).
+
+raw_callee_ticks([], 0).
+raw_callee_ticks([callee(_, _, Ticks)|Callees], Total) :-
+    raw_callee_ticks(Callees, Rest),
+    Total is Rest + Ticks.
 
 format_metta_tree_line(Depth, Label, Calls, TotalSeconds, TotalPercent, Status) :-
     Indent is Depth * 2,
@@ -431,10 +477,15 @@ format_metta_tree_line(Depth, Label, Calls, TotalSeconds, TotalPercent, Status) 
       -> format(string(DisplayLabel), "~w (cycle)", [Label])
       ; Status == shared
       -> format(string(DisplayLabel), "~w (expanded above)", [Label])
+      ; Status == self
+      -> DisplayLabel = Label
       ; DisplayLabel = Label
     ),
     format("~*c~w~t~D~78|~t~3f s~92|~t~1f %~106|~n",
            [Indent, 0' , DisplayLabel, Calls, TotalSeconds, TotalPercent]).
+
+node_total_ticks(Node, Ticks) :-
+    Ticks is Node.ticks_self + Node.ticks_siblings.
 
 metta_node_for_predicate([Node|_], Pred, Node) :-
     normalize_profile_predicate(Node.predicate, Pred),
