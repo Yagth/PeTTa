@@ -4,7 +4,11 @@
 %%% type_compat_soft/2 for a side-effect-free check.
 wildcard_type(T) :- atom(T), memberchk(T, ['%Undefined%', 'Atom', 'Expression']).
 
-type_unify(A, B) :- ( var(A) ; var(B) ), !, A = B.
+%A repeated variable in a call argument, e.g. (f ($e $e)), can make inference
+%build a cyclic type. A cyclic type carries no usable knowledge, so it fits
+%anything, and a binding that would create a cycle is skipped:
+type_unify(A, B) :- ( \+ acyclic_term(A) ; \+ acyclic_term(B) ), !.
+type_unify(A, B) :- ( var(A) ; var(B) ), !, ( unify_with_occurs_check(A, B) -> true ; true ).
 %A wildcard means "nothing is stated here", not "every type at once". The
 %difference matters against a newtype brand, so the brand rules run before the
 %wildcard shortcut (see brand_unify/2):

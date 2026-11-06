@@ -171,6 +171,7 @@ normalize_inferred(_, '%Undefined%').
 %shape it was built from (tagged_tuple_type/3), and collapses when any field
 %is undefined: a partly known tuple is not checkable. Parameter shapes are
 %verified against their patterns afterwards (pattern_type_roundtrip/3).
+normalize_inferred_param(T, '%Undefined%') :- \+ acyclic_term(T), !.
 normalize_inferred_param(T, TN) :- ( is_list(T), T = [Tag|Fs], atom(Tag), Fs \== [],
                                      maplist(normalize_inferred_param, Fs, FTs),
                                      \+ memberchk('%Undefined%', FTs),
