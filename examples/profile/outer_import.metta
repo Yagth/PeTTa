@@ -1,4 +1,4 @@
-!(import! &self profile_inner_leaf)
+!(import! &self inner_leaf)
 
 (= (profile-outer $n $rounds $acc)
    (if (== $rounds 0)
