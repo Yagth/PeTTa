@@ -14,6 +14,7 @@
 :- set_prolog_flag(encoding, utf8).
 
 :- ensure_loaded(metta).
+:- ensure_loaded(profiler).  % fork addition: -p|--profile
 :- multifile prolog:error_message//1.
 
 % Typecheck error messages — the spec suite (test.sh, examples/fail_*.metta)
@@ -89,15 +90,27 @@ prolog_interop_example :- register_fun(prologfunc),
                           mettafunc(30, R),
                           format("mettafunc(30) = ~w~n", [R]).
 
+is_profile_flag('-p').
+is_profile_flag('--profile').
+
+%Strip the profile flags and report whether one was given:
+strip_profile_flags(Args, Filtered, Profile) :-
+        exclude(is_profile_flag, Args, Filtered),
+        ( Filtered == Args -> Profile = false ; Profile = true ).
+
+load_metta_files(false, Files, ResultsList) :- maplist(load_metta_file, Files, ResultsList).
+load_metta_files(true, Files, ResultsList) :- profile_metta_files(Files, ResultsList).
+
 main :- current_prolog_flag(argv, RawArgs),
-        strip_silent_flags(RawArgs, Args),
+        strip_silent_flags(RawArgs, Args0),
+        strip_profile_flags(Args0, Args, Profile),
         ( Args = [] -> prolog_interop_example
         ; Args = [mork] -> prolog_interop_example,
                            mork_test
         ; metta_files(Args, Files), Files = [First|_]
           -> file_directory_name(First, Dir),
              assertz(working_dir(Dir)),
-             maplist(load_metta_file, Files, ResultsList),
+             load_metta_files(Profile, Files, ResultsList),
              append(ResultsList, Results),
              maplist(swrite,Results,ResultsR),
              maplist(format("~w~n"), ResultsR)
